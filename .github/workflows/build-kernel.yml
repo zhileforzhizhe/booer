@@ -3,10 +3,6 @@ name: Build Redmi K50 DroidSpaces Kernel
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'droidspaces.config'
-      - 'scripts/**'
-      - '.github/workflows/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:  # 手动触发
@@ -19,7 +15,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360  # 内核编译可能需要较长时间
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -27,9 +23,7 @@ jobs:
 
       - name: Free up disk space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
           sudo apt-get clean
           df -h
 
@@ -37,166 +31,176 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            cpio \
-            kmod \
-            zip \
-            unzip \
-            curl \
-            git \
-            python3 \
-            device-tree-compiler
+            build-essential bc bison flex libssl-dev libelf-dev \
+            cpio kmod zip unzip curl git python3 \
+            device-tree-compiler gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf
 
-      - name: Setup Clang/LLVM toolchain
+      - name: Setup Clang toolchain
         run: |
-          # Install latest stable clang
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y clang-17 lld-17
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-17 100
-          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-17 100
-          clang --version
-
-      - name: Setup GCC cross-compiler
-        run: |
-          # Download Google's prebuilt GCC for aarch64
-          GCC_VERSION="4.9"
-          GCC_DIR="$HOME/gcc-aarch64"
-          mkdir -p "$GCC_DIR"
-
-          # Use a standalone aarch64 cross-compiler
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-
-          echo "GCC cross-compiler installed:"
-          aarch64-linux-gnu-gcc --version | head -1
+          # 使用 AOSP 预编译的 clang (更可靠)
+          CLANG_VERSION="r522817"
+          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz" -O clang.tar.gz || {
+            echo "AOSP clang download failed, using system clang"
+            sudo apt-get install -y clang lld
+          }
+          if [ -f clang.tar.gz ]; then
+            mkdir -p clang && tar -xzf clang.tar.gz -C clang
+            export PATH="$(pwd)/clang/bin:$PATH"
+          fi
+          clang --version | head -3
+          echo "CC=clang" >> $GITHUB_ENV
 
       - name: Clone kernel source
         run: |
           echo "Cloning $KERNEL_REPO (branch: $KERNEL_BRANCH)..."
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
-          echo "Kernel source cloned successfully"
+          echo "=== Kernel top-level files ==="
           ls kernel/
-          echo "Available defconfigs:"
-          ls kernel/arch/arm64/configs/ | grep -i rubens || echo "No rubens defconfig found"
+          echo "=== Available defconfigs ==="
+          ls kernel/arch/arm64/configs/ | head -30
+          echo "=== Looking for rubens defconfig ==="
+          ls kernel/arch/arm64/configs/ | grep -i rubens || echo "NOT FOUND - listing all MTK configs:"
+          ls kernel/arch/arm64/configs/ | grep -i mtk || true
+          echo "=== Check Makefile kernel version ==="
+          head -5 kernel/Makefile
+
+      - name: Find correct defconfig
+        working-directory: kernel
+        run: |
+          echo "Searching for defconfig..."
+          # Try multiple possible names
+          for name in mikrn_rubens_defconfig rubens_defconfig rubens-s-oss_defconfig; do
+            if [ -f "arch/arm64/configs/$name" ]; then
+              echo "FOUND: $name"
+              echo "DEFCONFIG_NAME=$name" >> $GITHUB_ENV
+              break
+            fi
+          done
+
+          # If not found, search more broadly
+          if [ -z "$DEFCONFIG_NAME" ]; then
+            echo "Exact name not found, searching..."
+            FOUND=$(find arch/arm64/configs -name "*rubens*" -o -name "*k50*" 2>/dev/null | head -1)
+            if [ -n "$FOUND" ]; then
+              echo "FOUND: $FOUND"
+              echo "DEFCONFIG_NAME=$(basename $FOUND)" >> $GITHUB_ENV
+            else
+              echo "ERROR: No rubens defconfig found!"
+              echo "All available defconfigs:"
+              ls arch/arm64/configs/
+              exit 1
+            fi
+          fi
 
       - name: Download DroidSpaces patches
         run: |
           mkdir -p kernel/patches
           cd kernel/patches
 
-          # SYSVIPC kABI fix for GKI below 6.12
           echo "Downloading SYSVIPC kABI patch..."
           curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" \
             -o "001-fix_sysvipc_kabi.patch"
 
-          # POSIX_MQUEUE fix for kernel 5.10 and below
           echo "Downloading POSIX_MQUEUE patch..."
           curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch" \
             -o "002-fix_posix_mqueue.patch"
 
           echo "Patches downloaded:"
           ls -la
+          echo "--- Patch 001 preview ---"
+          head -20 001-fix_sysvipc_kabi.patch
+          echo "--- Patch 002 preview ---"
+          head -20 002-fix_posix_mqueue.patch
 
       - name: Apply DroidSpaces patches
         working-directory: kernel
         run: |
           echo "Applying DroidSpaces patches..."
-
           for patch in patches/*.patch; do
-            echo "Applying: $(basename $patch)"
-            patch -p1 < "$patch" || {
-              echo "WARNING: Patch $(basename $patch) may have already been applied."
+            echo "=== Applying: $(basename $patch) ==="
+            patch -p1 --verbose < "$patch" || {
+              echo "WARNING: Patch $(basename $patch) had issues (may already be applied)"
             }
           done
-
-          echo "All patches applied."
+          echo "All patches processed."
 
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
         run: |
-          CONFIG_FILE="arch/arm64/configs/$DEFCONFIG"
+          CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
+          echo "Config file: $CONFIG_FILE"
+          echo "File exists: $(ls -la $CONFIG_FILE)"
 
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "ERROR: Defconfig not found at $CONFIG_FILE"
-            echo "Available defconfigs:"
-            ls arch/arm64/configs/
-            exit 1
-          fi
-
-          echo "Original defconfig found: $CONFIG_FILE"
-          echo "Applying DroidSpaces configuration..."
-
-          # Append DroidSpaces config
           echo "" >> "$CONFIG_FILE"
           echo "# DroidSpaces container support (auto-added)" >> "$CONFIG_FILE"
           cat ../droidspaces.config >> "$CONFIG_FILE"
 
-          echo "Configuration applied successfully."
-
-          # Show the DroidSpaces-specific configs
-          echo "DroidSpaces configs in defconfig:"
-          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE)" "$CONFIG_FILE" || true
+          echo "=== DroidSpaces configs added ==="
+          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE)" "$CONFIG_FILE"
 
       - name: Build kernel
         working-directory: kernel
         run: |
-          echo "Building kernel for Redmi K50 (rubens)..."
+          echo "========================================="
+          echo " Building kernel for Redmi K50 (rubens)"
+          echo "========================================="
 
-          # Generate .config from defconfig
-          make ARCH=arm64 $DEFCONFIG
+          # Generate .config
+          echo "Step 1: Generate .config from defconfig..."
+          make ARCH=arm64 ${DEFCONFIG_NAME} 2>&1 | tee ../defconfig.log
 
-          echo "Starting compilation..."
+          echo ""
+          echo "Step 2: Verify critical configs are enabled..."
+          for cfg in SYSVIPC POSIX_MQUEUE IPC_NS PID_NS DEVTMPFS NET_NS CGROUPS NAMESPACES SECCOMP; do
+            val=$(grep "CONFIG_${cfg}=" .config 2>/dev/null || echo "NOT SET")
+            echo "  CONFIG_${cfg}: $val"
+          done
+
+          echo ""
+          echo "Step 3: Compile kernel..."
           echo "Using $(nproc) cores"
 
-          # Build kernel
+          # Build - capture full output
           make ARCH=arm64 -j$(nproc) \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
             LLVM=1 \
             LLVM_IAS=1 \
-            Image dtbs modules 2>&1 | tee ../build.log | tail -100
+            Image 2>&1 | tee ../build.log
 
-          echo "Build completed!"
+          BUILD_EXIT=$?
+          echo "Build exit code: $BUILD_EXIT"
 
-      - name: Package kernel
-        run: |
-          mkdir -p output
-
-          # Copy kernel image
-          if [ -f "kernel/arch/arm64/boot/Image" ]; then
-            cp kernel/arch/arm64/boot/Image output/
-            echo "Kernel Image copied."
+          # Check if Image exists
+          if [ -f "arch/arm64/boot/Image" ]; then
+            echo "SUCCESS: Kernel Image found!"
+            ls -la arch/arm64/boot/Image
           else
-            echo "ERROR: Kernel Image not found!"
-            ls -la kernel/arch/arm64/boot/
+            echo "FAILURE: Kernel Image not found!"
+            echo "=== Last 200 lines of build log ==="
+            tail -200 ../build.log
             exit 1
           fi
 
-          # Copy DTBs
+      - name: Package kernel
+        if: success()
+        run: |
           mkdir -p output/dtbs
+
+          cp kernel/arch/arm64/boot/Image output/
           find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cp {} output/dtbs/ \; 2>/dev/null || true
+          cp kernel/arch/arm64/configs/${DEFCONFIG_NAME} output/droidspaces_defconfig
+          cp kernel/.config output/kernel_defconfig
 
-          # Copy defconfig for reference
-          cp kernel/arch/arm64/configs/$DEFCONFIG output/droidspaces_defconfig
-
-          # Create a zip with all output
-          cd output
-          zip -r ../droidspaces-k50-kernel.zip .
-          cd ..
-
-          echo "Package created: droidspaces-k50-kernel.zip"
-          ls -la output/
+          cd output && zip -r ../droidspaces-k50-kernel.zip .
+          echo "Package created!"
+          ls -la ../droidspaces-k50-kernel.zip
 
       - name: Upload kernel artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: droidspaces-k50-kernel
@@ -204,37 +208,16 @@ jobs:
             output/Image
             output/dtbs/
             output/droidspaces_defconfig
+            output/kernel_defconfig
             droidspaces-k50-kernel.zip
           retention-days: 30
 
-      - name: Upload build log
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: build-logs
+          path: |
+            build.log
+            defconfig.log
           retention-days: 7
-
-      - name: Create release (on tag push)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            droidspaces-k50-kernel.zip
-            output/Image
-          body: |
-            ## Redmi K50 DroidSpaces Kernel
-
-            内核版本: 5.10.x (GKI)
-            设备: Redmi K50 (rubens)
-            DroidSpaces 支持: ✅
-
-            ### 刷入方法
-            ```bash
-            fastboot flash boot boot.img
-            ```
-
-            ### 验证
-            安装 DroidSpaces app 后，进入 Settings → Requirements → Check Requirements
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
