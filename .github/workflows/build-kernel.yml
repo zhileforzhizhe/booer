@@ -137,8 +137,24 @@ jobs:
           echo "# DroidSpaces container support (auto-added)" >> "$CONFIG_FILE"
           cat ../droidspaces.config >> "$CONFIG_FILE"
 
+          # Fix interactive prompts - pre-set these options
+          echo "" >> "$CONFIG_FILE"
+          echo "# Prevent interactive prompts during build" >> "$CONFIG_FILE"
+          echo "CONFIG_INIT_STACK_NONE=y" >> "$CONFIG_FILE"
+          echo "# CONFIG_INIT_STACK_ALL_PATTERN is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_INIT_STACK_ALL_ZERO is not set" >> "$CONFIG_FILE"
+          echo "CONFIG_INIT_ON_ALLOC_DEFAULT_ON=n" >> "$CONFIG_FILE"
+          echo "CONFIG_INIT_ON_FREE_DEFAULT_ON=n" >> "$CONFIG_FILE"
+
+          # Enable module support (required for some vendor modules)
+          echo "" >> "$CONFIG_FILE"
+          echo "# Enable loadable module support" >> "$CONFIG_FILE"
+          echo "CONFIG_MODULES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_MODULE_UNLOAD=y" >> "$CONFIG_FILE"
+          echo "CONFIG_MODULE_FORCE_UNLOAD=y" >> "$CONFIG_FILE"
+
           echo "=== DroidSpaces configs added ==="
-          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE)" "$CONFIG_FILE"
+          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE|MODULES|INIT_STACK)" "$CONFIG_FILE"
 
       - name: Build kernel
         working-directory: kernel
@@ -162,14 +178,14 @@ jobs:
           echo "Step 3: Compile kernel..."
           echo "Using $(nproc) cores"
 
-          # Build - capture full output
-          make ARCH=arm64 -j$(nproc) \
+          # Build - use 'yes ""' to handle any remaining interactive prompts
+          yes "" | make ARCH=arm64 -j$(nproc) \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
             LLVM=1 \
             LLVM_IAS=1 \
-            Image 2>&1 | tee ../build.log
+            Image modules 2>&1 | tee ../build.log
 
           BUILD_EXIT=$?
           echo "Build exit code: $BUILD_EXIT"
