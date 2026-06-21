@@ -39,18 +39,14 @@ jobs:
 
       - name: Setup Clang toolchain
         run: |
-          # 使用 AOSP 预编译的 clang (更可靠)
-          CLANG_VERSION="r522817"
-          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz" -O clang.tar.gz || {
-            echo "AOSP clang download failed, using system clang"
-            sudo apt-get install -y clang lld
-          }
-          if [ -f clang.tar.gz ]; then
-            mkdir -p clang && tar -xzf clang.tar.gz -C clang
-            export PATH="$(pwd)/clang/bin:$PATH"
-          fi
-          clang --version | head -3
-          echo "CC=clang" >> $GITHUB_ENV
+          sudo apt-get install -y clang lld llvm
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.lld
+          echo "=== Toolchain versions ==="
+          clang --version | head -1
+          ld.lld --version | head -1
+          llvm-ar --version | head -1
+          echo "=== Verify ld.lld is in PATH ==="
+          which ld.lld
 
       - name: Clone kernel source
         run: |
@@ -131,30 +127,77 @@ jobs:
         run: |
           CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
           echo "Config file: $CONFIG_FILE"
-          echo "File exists: $(ls -la $CONFIG_FILE)"
 
-          echo "" >> "$CONFIG_FILE"
-          echo "# DroidSpaces container support (auto-added)" >> "$CONFIG_FILE"
-          cat ../droidspaces.config >> "$CONFIG_FILE"
+          # First: remove any existing conflicting configs from defconfig
+          sed -i '/^CONFIG_SYSVIPC/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_POSIX_MQUEUE/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_IPC_NS/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_PID_NS/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_NET_NS/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_NETFILTER_XT_MATCH_ADDRTYPE/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_DEVTMPFS/d' "$CONFIG_FILE"
+          sed -i '/^# CONFIG_SYSVIPC is not set/d' "$CONFIG_FILE"
+          sed -i '/^# CONFIG_POSIX_MQUEUE is not set/d' "$CONFIG_FILE"
+          sed -i '/^# CONFIG_IPC_NS is not set/d' "$CONFIG_FILE"
+          sed -i '/^# CONFIG_PID_NS is not set/d' "$CONFIG_FILE"
+          sed -i '/^# CONFIG_NET_NS is not set/d' "$CONFIG_FILE"
 
-          # Fix interactive prompts - pre-set these options
+          # Append DroidSpaces config (after removing conflicts)
           echo "" >> "$CONFIG_FILE"
-          echo "# Prevent interactive prompts during build" >> "$CONFIG_FILE"
+          echo "# ============================================" >> "$CONFIG_FILE"
+          echo "# DroidSpaces container support" >> "$CONFIG_FILE"
+          echo "# ============================================" >> "$CONFIG_FILE"
+
+          # Core dependencies first
+          echo "CONFIG_NET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_INET=y" >> "$CONFIG_FILE"
+          echo "CONFIG_SYSVIPC=y" >> "$CONFIG_FILE"
+          echo "CONFIG_POSIX_MQUEUE=y" >> "$CONFIG_FILE"
+
+          # Namespaces
+          echo "CONFIG_NAMESPACES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_UTS_NS=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IPC_NS=y" >> "$CONFIG_FILE"
+          echo "CONFIG_PID_NS=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NET_NS=y" >> "$CONFIG_FILE"
+
+          # Cgroups
+          echo "CONFIG_CGROUPS=y" >> "$CONFIG_FILE"
+          echo "CONFIG_CGROUP_DEVICE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_CGROUP_PIDS=y" >> "$CONFIG_FILE"
+          echo "CONFIG_MEMCG=y" >> "$CONFIG_FILE"
+          echo "CONFIG_CGROUP_SCHED=y" >> "$CONFIG_FILE"
+          echo "CONFIG_CGROUP_FREEZER=y" >> "$CONFIG_FILE"
+
+          # Seccomp
+          echo "CONFIG_SECCOMP=y" >> "$CONFIG_FILE"
+          echo "CONFIG_SECCOMP_FILTER=y" >> "$CONFIG_FILE"
+
+          # Device filesystem
+          echo "CONFIG_DEVTMPFS=y" >> "$CONFIG_FILE"
+
+          # Networking for NAT mode
+          echo "CONFIG_NETFILTER=y" >> "$CONFIG_FILE"
+          echo "CONFIG_VETH=y" >> "$CONFIG_FILE"
+          echo "CONFIG_BRIDGE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_IP_NF_TARGET_MASQUERADE=y" >> "$CONFIG_FILE"
+          echo "CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y" >> "$CONFIG_FILE"
+
+          # OverlayFS (volatile mode)
+          echo "CONFIG_OVERLAY_FS=y" >> "$CONFIG_FILE"
+
+          # Module support
+          echo "CONFIG_MODULES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_MODULE_UNLOAD=y" >> "$CONFIG_FILE"
+
+          # Prevent interactive prompts
           echo "CONFIG_INIT_STACK_NONE=y" >> "$CONFIG_FILE"
-          echo "# CONFIG_INIT_STACK_ALL_PATTERN is not set" >> "$CONFIG_FILE"
-          echo "# CONFIG_INIT_STACK_ALL_ZERO is not set" >> "$CONFIG_FILE"
           echo "CONFIG_INIT_ON_ALLOC_DEFAULT_ON=n" >> "$CONFIG_FILE"
           echo "CONFIG_INIT_ON_FREE_DEFAULT_ON=n" >> "$CONFIG_FILE"
 
-          # Enable module support (required for some vendor modules)
-          echo "" >> "$CONFIG_FILE"
-          echo "# Enable loadable module support" >> "$CONFIG_FILE"
-          echo "CONFIG_MODULES=y" >> "$CONFIG_FILE"
-          echo "CONFIG_MODULE_UNLOAD=y" >> "$CONFIG_FILE"
-          echo "CONFIG_MODULE_FORCE_UNLOAD=y" >> "$CONFIG_FILE"
-
-          echo "=== DroidSpaces configs added ==="
-          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE|MODULES|INIT_STACK)" "$CONFIG_FILE"
+          echo "=== Final DroidSpaces configs in defconfig ==="
+          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|NET_NS|DEVTMPFS|CGROUPS|NAMESPACES|SECCOMP|NET=|MODULES|INIT_STACK)" "$CONFIG_FILE"
 
       - name: Build kernel
         working-directory: kernel
@@ -179,16 +222,21 @@ jobs:
           echo "Using $(nproc) cores"
 
           # Build - use 'yes ""' to handle any remaining interactive prompts
+          # Use set -o pipefail to capture make's exit code through the pipe
+          set -o pipefail
           yes "" | make ARCH=arm64 -j$(nproc) \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
             LLVM=1 \
             LLVM_IAS=1 \
-            Image modules 2>&1 | tee ../build.log
-
-          BUILD_EXIT=$?
-          echo "Build exit code: $BUILD_EXIT"
+            Image modules 2>&1 | tee ../build.log || {
+            BUILD_EXIT=$?
+            echo "Build FAILED with exit code: $BUILD_EXIT"
+            echo "=== Last 300 lines of build log ==="
+            tail -300 ../build.log
+            exit 1
+          }
 
           # Check if Image exists
           if [ -f "arch/arm64/boot/Image" ]; then
