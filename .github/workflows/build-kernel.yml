@@ -135,18 +135,38 @@ jobs:
           echo "=== Checking patched file ==="
           grep -n "ANDROID_KABI_CHECK_SIZE_ALIGN\|_ANDROID_KABI_REPLACE" include/linux/android_kabi.h
 
-      - name: Fix MediaTek driver include paths for Clang
+      - name: Fix MediaTek driver issues for Clang
         working-directory: kernel
         run: |
           echo "=== Fixing Clang strict include path issues ==="
-          # Fix the angled include for relative path
-          if [ -f drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c ]; then
-            sed -i 's|#include <../../gpio/gpiolib.h>|#include "../../gpio/gpiolib.h"|' \
-              drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c
-            echo "Fixed: drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c"
+
+          # Fix all angled includes with relative paths across the tree
+          find . -name '*.c' -o -name '*.h' | while read f; do
+            if grep -q '#include <\.\./' "$f" 2>/dev/null; then
+              sed -i 's|#include <\(\.\./[^>]*\)>|#include "\1"|g' "$f"
+              echo "Fixed includes in: $f"
+            fi
+          done
+
+          # Specific fix for rpmb-mtk.c - mtk_mmc_host undeclared
+          # This is likely a missing header or forward declaration
+          if [ -f drivers/char/rpmb/rpmb-mtk.c ]; then
+            echo "Checking rpmb-mtk.c for mtk_mmc_host..."
+            grep -n 'mtk_mmc_host' drivers/char/rpmb/rpmb-mtk.c | head -5
+            # Add include for the header that defines mtk_mmc_host
+            MMC_HEADER=$(find . -name '*.h' -exec grep -l 'struct mtk_mmc_host' {} \; 2>/dev/null | head -1)
+            if [ -n "$MMC_HEADER" ]; then
+              echo "Found mtk_mmc_host defined in: $MMC_HEADER"
+              # Add the include at the top of the file
+              sed -i "1i #include \"$MMC_HEADER\"" drivers/char/rpmb/rpmb-mtk.c
+            else
+              echo "WARNING: mtk_mmc_host struct not found in any header"
+              # Try to find what header defines it
+              grep -rn 'struct mtk_mmc_host' include/ drivers/ 2>/dev/null | head -5
+            fi
           fi
-          # Find and fix any other similar issues
-          grep -rn '#include <\.\./\.\.' drivers/ 2>/dev/null | head -10 || echo "No other issues found"
+
+          echo "=== Done fixing MediaTek drivers ==="
 
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
