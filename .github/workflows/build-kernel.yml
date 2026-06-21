@@ -1,0 +1,240 @@
+name: Build Redmi K50 DroidSpaces Kernel
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'droidspaces.config'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发
+
+env:
+  KERNEL_REPO: https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git
+  KERNEL_BRANCH: rubens-s-oss
+  DEFCONFIG: mikrn_rubens_defconfig
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 内核编译可能需要较长时间
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            cpio \
+            kmod \
+            zip \
+            unzip \
+            curl \
+            git \
+            python3 \
+            device-tree-compiler
+
+      - name: Setup Clang/LLVM toolchain
+        run: |
+          # Install latest stable clang
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-17 lld-17
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-17 100
+          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-17 100
+          clang --version
+
+      - name: Setup GCC cross-compiler
+        run: |
+          # Download Google's prebuilt GCC for aarch64
+          GCC_VERSION="4.9"
+          GCC_DIR="$HOME/gcc-aarch64"
+          mkdir -p "$GCC_DIR"
+
+          # Use a standalone aarch64 cross-compiler
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+          echo "GCC cross-compiler installed:"
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Clone kernel source
+        run: |
+          echo "Cloning $KERNEL_REPO (branch: $KERNEL_BRANCH)..."
+          git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          echo "Kernel source cloned successfully"
+          ls kernel/
+          echo "Available defconfigs:"
+          ls kernel/arch/arm64/configs/ | grep -i rubens || echo "No rubens defconfig found"
+
+      - name: Download DroidSpaces patches
+        run: |
+          mkdir -p kernel/patches
+          cd kernel/patches
+
+          # SYSVIPC kABI fix for GKI below 6.12
+          echo "Downloading SYSVIPC kABI patch..."
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" \
+            -o "001-fix_sysvipc_kabi.patch"
+
+          # POSIX_MQUEUE fix for kernel 5.10 and below
+          echo "Downloading POSIX_MQUEUE patch..."
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch" \
+            -o "002-fix_posix_mqueue.patch"
+
+          echo "Patches downloaded:"
+          ls -la
+
+      - name: Apply DroidSpaces patches
+        working-directory: kernel
+        run: |
+          echo "Applying DroidSpaces patches..."
+
+          for patch in patches/*.patch; do
+            echo "Applying: $(basename $patch)"
+            patch -p1 < "$patch" || {
+              echo "WARNING: Patch $(basename $patch) may have already been applied."
+            }
+          done
+
+          echo "All patches applied."
+
+      - name: Apply DroidSpaces kernel config
+        working-directory: kernel
+        run: |
+          CONFIG_FILE="arch/arm64/configs/$DEFCONFIG"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: Defconfig not found at $CONFIG_FILE"
+            echo "Available defconfigs:"
+            ls arch/arm64/configs/
+            exit 1
+          fi
+
+          echo "Original defconfig found: $CONFIG_FILE"
+          echo "Applying DroidSpaces configuration..."
+
+          # Append DroidSpaces config
+          echo "" >> "$CONFIG_FILE"
+          echo "# DroidSpaces container support (auto-added)" >> "$CONFIG_FILE"
+          cat ../droidspaces.config >> "$CONFIG_FILE"
+
+          echo "Configuration applied successfully."
+
+          # Show the DroidSpaces-specific configs
+          echo "DroidSpaces configs in defconfig:"
+          grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NET_NS|CGROUPS|NAMESPACES|SECCOMP|OVERLAY_FS|VETH|BRIDGE)" "$CONFIG_FILE" || true
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          echo "Building kernel for Redmi K50 (rubens)..."
+
+          # Generate .config from defconfig
+          make ARCH=arm64 $DEFCONFIG
+
+          echo "Starting compilation..."
+          echo "Using $(nproc) cores"
+
+          # Build kernel
+          make ARCH=arm64 -j$(nproc) \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image dtbs modules 2>&1 | tee ../build.log | tail -100
+
+          echo "Build completed!"
+
+      - name: Package kernel
+        run: |
+          mkdir -p output
+
+          # Copy kernel image
+          if [ -f "kernel/arch/arm64/boot/Image" ]; then
+            cp kernel/arch/arm64/boot/Image output/
+            echo "Kernel Image copied."
+          else
+            echo "ERROR: Kernel Image not found!"
+            ls -la kernel/arch/arm64/boot/
+            exit 1
+          fi
+
+          # Copy DTBs
+          mkdir -p output/dtbs
+          find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cp {} output/dtbs/ \; 2>/dev/null || true
+
+          # Copy defconfig for reference
+          cp kernel/arch/arm64/configs/$DEFCONFIG output/droidspaces_defconfig
+
+          # Create a zip with all output
+          cd output
+          zip -r ../droidspaces-k50-kernel.zip .
+          cd ..
+
+          echo "Package created: droidspaces-k50-kernel.zip"
+          ls -la output/
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-k50-kernel
+          path: |
+            output/Image
+            output/dtbs/
+            output/droidspaces_defconfig
+            droidspaces-k50-kernel.zip
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
+
+      - name: Create release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            droidspaces-k50-kernel.zip
+            output/Image
+          body: |
+            ## Redmi K50 DroidSpaces Kernel
+
+            内核版本: 5.10.x (GKI)
+            设备: Redmi K50 (rubens)
+            DroidSpaces 支持: ✅
+
+            ### 刷入方法
+            ```bash
+            fastboot flash boot boot.img
+            ```
+
+            ### 验证
+            安装 DroidSpaces app 后，进入 Settings → Requirements → Check Requirements
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

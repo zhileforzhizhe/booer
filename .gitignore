@@ -1,0 +1,21 @@
+# Build artifacts
+output/
+kernel/
+*.zip
+*.img
+build.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
