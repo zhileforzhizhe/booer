@@ -176,6 +176,16 @@ jobs:
           CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
           echo "Config file: $CONFIG_FILE"
 
+          # Disable problematic MTK drivers FIRST (before any other config)
+          echo "# CONFIG_MTK_RPMB is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_RPMB is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_IOMMU_DEBUG is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_IOMMU_MISC is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_SMI_DEBUG is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_FPSGO is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_GZ_LOG is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MMC_MTK is not set" >> "$CONFIG_FILE"
+
           # First: remove any existing conflicting configs from defconfig
           sed -i '/^CONFIG_SYSVIPC/d' "$CONFIG_FILE"
           sed -i '/^CONFIG_POSIX_MQUEUE/d' "$CONFIG_FILE"
@@ -270,6 +280,21 @@ jobs:
           # Generate .config
           echo "Step 1: Generate .config from defconfig..."
           make ARCH=arm64 ${DEFCONFIG_NAME} 2>&1 | tee ../defconfig.log
+
+          # Force disable problematic drivers in .config (override defconfig)
+          echo "=== Force disabling problematic MTK drivers ==="
+          sed -i 's/^CONFIG_MTK_RPMB=.*/# CONFIG_MTK_RPMB is not set/' .config
+          sed -i 's/^CONFIG_RPMB=.*/# CONFIG_RPMB is not set/' .config
+          sed -i 's/^CONFIG_MTK_IOMMU_DEBUG=.*/# CONFIG_MTK_IOMMU_DEBUG is not set/' .config
+          sed -i 's/^CONFIG_MTK_IOMMU_MISC=.*/# CONFIG_MTK_IOMMU_MISC is not set/' .config
+          sed -i 's/^CONFIG_MTK_SMI_DEBUG=.*/# CONFIG_MTK_SMI_DEBUG is not set/' .config
+          sed -i 's/^CONFIG_MTK_FPSGO=.*/# CONFIG_MTK_FPSGO is not set/' .config
+          sed -i 's/^CONFIG_MTK_GZ_LOG=.*/# CONFIG_MTK_GZ_LOG is not set/' .config
+          sed -i 's/^CONFIG_MMC_MTK=.*/# CONFIG_MMC_MTK is not set/' .config
+          # Also disable any MTK RPMB module
+          sed -i 's/^CONFIG_MTK_RPMB=m.*/# CONFIG_MTK_RPMB is not set/' .config
+          # Verify
+          grep -E "CONFIG_MTK_RPMB|CONFIG_RPMB|CONFIG_MTK_IOMMU|CONFIG_MTK_SMI" .config || echo "All disabled"
 
           echo ""
           echo "Step 2: Verify critical configs are enabled..."
