@@ -40,13 +40,16 @@ jobs:
       - name: Setup Clang toolchain
         run: |
           sudo apt-get install -y clang lld llvm
-          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.lld
+          # Ubuntu lld package installs as ld.lld-14, create symlink
+          sudo ln -sf /usr/bin/ld.lld-14 /usr/bin/ld.lld
+          sudo ln -sf /usr/bin/lld-14 /usr/bin/lld
           echo "=== Toolchain versions ==="
           clang --version | head -1
           ld.lld --version | head -1
           llvm-ar --version | head -1
           echo "=== Verify ld.lld is in PATH ==="
           which ld.lld
+          ls -la /usr/bin/ld.lld*
 
       - name: Clone kernel source
         run: |
