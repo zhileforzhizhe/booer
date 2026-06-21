@@ -135,38 +135,40 @@ jobs:
           echo "=== Checking patched file ==="
           grep -n "ANDROID_KABI_CHECK_SIZE_ALIGN\|_ANDROID_KABI_REPLACE" include/linux/android_kabi.h
 
-      - name: Fix MediaTek driver issues for Clang
+      - name: Fix and disable problematic MediaTek drivers
         working-directory: kernel
         run: |
           echo "=== Fixing Clang strict include path issues ==="
 
-          # Fix all angled includes with relative paths across the tree
+          # Fix all angled includes with relative paths
           find . -name '*.c' -o -name '*.h' | while read f; do
             if grep -q '#include <\.\./' "$f" 2>/dev/null; then
               sed -i 's|#include <\(\.\./[^>]*\)>|#include "\1"|g' "$f"
-              echo "Fixed includes in: $f"
+              echo "Fixed: $f"
             fi
           done
 
-          # Specific fix for rpmb-mtk.c - mtk_mmc_host undeclared
-          # This is likely a missing header or forward declaration
-          if [ -f drivers/char/rpmb/rpmb-mtk.c ]; then
-            echo "Checking rpmb-mtk.c for mtk_mmc_host..."
-            grep -n 'mtk_mmc_host' drivers/char/rpmb/rpmb-mtk.c | head -5
-            # Add include for the header that defines mtk_mmc_host
-            MMC_HEADER=$(find . -name '*.h' -exec grep -l 'struct mtk_mmc_host' {} \; 2>/dev/null | head -1)
-            if [ -n "$MMC_HEADER" ]; then
-              echo "Found mtk_mmc_host defined in: $MMC_HEADER"
-              # Add the include at the top of the file
-              sed -i "1i #include \"$MMC_HEADER\"" drivers/char/rpmb/rpmb-mtk.c
-            else
-              echo "WARNING: mtk_mmc_host struct not found in any header"
-              # Try to find what header defines it
-              grep -rn 'struct mtk_mmc_host' include/ drivers/ 2>/dev/null | head -5
-            fi
-          fi
+          # Disable problematic drivers in defconfig
+          CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
 
-          echo "=== Done fixing MediaTek drivers ==="
+          echo "=== Disabling problematic drivers ==="
+
+          # Disable rpmb-mtk (mtk_mmc_host issue)
+          echo "# CONFIG_MTK_RPMB is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_RPMB is not set" >> "$CONFIG_FILE"
+
+          # Disable iommu debug (mtk_iommu.h not found)
+          echo "# CONFIG_MTK_IOMMU_DEBUG is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_IOMMU_MISC is not set" >> "$CONFIG_FILE"
+
+          # Also disable smi debug which has similar issues
+          echo "# CONFIG_MTK_SMI_DEBUG is not set" >> "$CONFIG_FILE"
+
+          # Disable other potentially problematic MTK debug drivers
+          echo "# CONFIG_MTK_FPSGO is not set" >> "$CONFIG_FILE"
+          echo "# CONFIG_MTK_GZ_LOG is not set" >> "$CONFIG_FILE"
+
+          echo "=== Disabled problematic drivers ==="
 
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
