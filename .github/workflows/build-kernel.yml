@@ -135,6 +135,19 @@ jobs:
           echo "=== Checking patched file ==="
           grep -n "ANDROID_KABI_CHECK_SIZE_ALIGN\|_ANDROID_KABI_REPLACE" include/linux/android_kabi.h
 
+      - name: Fix MediaTek driver include paths for Clang
+        working-directory: kernel
+        run: |
+          echo "=== Fixing Clang strict include path issues ==="
+          # Fix the angled include for relative path
+          if [ -f drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c ]; then
+            sed -i 's|#include <../../gpio/gpiolib.h>|#include "../../gpio/gpiolib.h"|' \
+              drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c
+            echo "Fixed: drivers/pinctrl/mediatek/pinctrl-mtk-common-v2_debug.c"
+          fi
+          # Find and fix any other similar issues
+          grep -rn '#include <\.\./\.\.' drivers/ 2>/dev/null | head -10 || echo "No other issues found"
+
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
         run: |
