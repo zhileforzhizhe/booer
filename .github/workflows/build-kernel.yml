@@ -247,20 +247,20 @@ jobs:
           echo "Step 3: Compile kernel..."
           echo "Using $(nproc) cores"
 
-          # Build - use 'yes ""' to handle any remaining interactive prompts
-          # Use set -o pipefail to capture make's exit code through the pipe
-          set -o pipefail
-          yes "" | make ARCH=arm64 -j$(nproc) \
+          # Build - write full output to log file, show tail on failure
+          make ARCH=arm64 -j$(nproc) \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
             LLVM=1 \
             LLVM_IAS=1 \
-            Image modules 2>&1 | tee ../build.log || {
-            BUILD_EXIT=$?
-            echo "Build FAILED with exit code: $BUILD_EXIT"
-            echo "=== Last 300 lines of build log ==="
-            tail -300 ../build.log
+            Image modules > ../build.log 2>&1 || {
+            echo "=== BUILD FAILED ==="
+            echo "=== Searching for errors in build log ==="
+            grep -n -i "error:" ../build.log | tail -30
+            echo ""
+            echo "=== Last 100 lines of build log ==="
+            tail -100 ../build.log
             exit 1
           }
 
