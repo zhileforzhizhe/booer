@@ -93,37 +93,59 @@ jobs:
             fi
           fi
 
-      - name: Download DroidSpaces patches
-        run: |
-          mkdir -p kernel/patches
-          cd kernel/patches
-
-          echo "Downloading SYSVIPC kABI patch..."
-          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" \
-            -o "001-fix_sysvipc_kabi.patch"
-
-          echo "Downloading POSIX_MQUEUE patch..."
-          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch" \
-            -o "002-fix_posix_mqueue.patch"
-
-          echo "Patches downloaded:"
-          ls -la
-          echo "--- Patch 001 preview ---"
-          head -20 001-fix_sysvipc_kabi.patch
-          echo "--- Patch 002 preview ---"
-          head -20 002-fix_posix_mqueue.patch
-
-      - name: Apply DroidSpaces patches
+      - name: Download and apply DroidSpaces patches
         working-directory: kernel
         run: |
-          echo "Applying DroidSpaces patches..."
-          for patch in patches/*.patch; do
-            echo "=== Applying: $(basename $patch) ==="
-            patch -p1 --verbose < "$patch" || {
-              echo "WARNING: Patch $(basename $patch) had issues (may already be applied)"
-            }
+          mkdir -p patches
+          cd patches
+
+          # Download ALL patch variants
+          echo "Downloading all SYSVIPC kABI patch variants..."
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" -o "001_6_7_8.patch"
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_1_2_3.patch" -o "001_1_2_3.patch"
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch" -o "001_3_4_5.patch"
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch" -o "002_posix_mqueue.patch"
+
+          cd ..
+
+          echo "=== Patch files ==="
+          ls -la patches/
+
+          # Try each SYSVIPC patch variant until one applies cleanly
+          echo "=== Applying SYSVIPC kABI patch ==="
+          PATCH_APPLIED=0
+          for patch in patches/001_*.patch; do
+            echo "Trying: $(basename $patch)"
+            if patch -p1 --forward --dry-run < "$patch" 2>/dev/null; then
+              echo "  -> This patch applies cleanly!"
+              patch -p1 < "$patch"
+              PATCH_APPLIED=1
+              break
+            else
+              echo "  -> Does not apply, trying next..."
+            fi
           done
-          echo "All patches processed."
+
+          if [ $PATCH_APPLIED -eq 0 ]; then
+            echo "WARNING: No SYSVIPC patch applied cleanly. Checking if already applied..."
+            grep -r "sysv_shm" include/linux/sched.h && echo "May already be patched" || echo "NOT patched - build will likely fail"
+          fi
+
+          # Apply POSIX_MQUEUE patch
+          echo ""
+          echo "=== Applying POSIX_MQUEUE patch ==="
+          if [ -f patches/002_posix_mqueue.patch ]; then
+            if patch -p1 --forward --dry-run < patches/002_posix_mqueue.patch 2>/dev/null; then
+              echo "POSIX_MQUEUE patch applies cleanly!"
+              patch -p1 < patches/002_posix_mqueue.patch
+            else
+              echo "POSIX_MQUEUE patch does not apply (may already be applied)"
+            fi
+          fi
+
+          echo ""
+          echo "=== Verify patches applied ==="
+          grep -n "ANDROID_KABI_RESERVE" include/linux/sched.h | head -10 || true
 
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
