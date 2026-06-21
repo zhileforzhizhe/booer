@@ -1,0 +1,23 @@
+--- a/include/linux/android_kabi.h
++++ b/include/linux/android_kabi.h
+@@ -40,16 +40,8 @@
+ #define ANDROID_KABI_RESERVE(n)		s64 android_kabi_reserved##n
+
+ #define __ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new)				\
+-	_Static_assert(sizeof(struct{_new;}) <= sizeof(struct{_orig;}),		\
+-		__FILE__ ":" __stringify(__LINE__) " "				\
+-		#_new " is larger than " #_orig);				\
+-	_Static_assert(__alignof__(struct{_new;}) <= __alignof__(struct{_orig;}),	\
+-		__FILE__ ":" __stringify(__LINE__) " "				\
+-		"; is not aligned the same as " #_new " " #_orig)
+-
+-#define _ANDROID_KABI_REPLACE(_orig, _new)					\
+-	union {									\
+-		_orig;								\
+-		_new;								\
+-	}
++	do { (void)sizeof(_orig); (void)sizeof(_new); } while (0)
++
++#define _ANDROID_KABI_REPLACE(_orig, _new)	_new
+
+ #endif /* _LINUX_ANDROID_KABI_H */

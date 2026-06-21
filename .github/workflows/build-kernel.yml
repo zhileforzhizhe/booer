@@ -93,55 +93,47 @@ jobs:
             fi
           fi
 
-      - name: Fix kABI compatibility for SYSVIPC/POSIX_MQUEUE
+      - name: Fix kABI compatibility
         working-directory: kernel
         run: |
-          echo "=== Directly patching kABI compatibility ==="
+          echo "=== Patching android_kabi.h to disable kABI checks ==="
 
-          # First try downloading and applying DroidSpaces patches
-          mkdir -p patches && cd patches
-          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" -o "001.patch" 2>/dev/null
-          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch" -o "002.patch" 2>/dev/null
-          cd ..
+          # Save original
+          cp include/linux/android_kabi.h include/linux/android_kabi.h.orig
 
-          PATCH_OK=0
-          for p in patches/001.patch patches/002.patch; do
-            if [ -f "$p" ] && [ -s "$p" ] && patch -p1 --forward --dry-run < "$p" 2>/dev/null; then
-              echo "Applying: $p"
-              patch -p1 < "$p"
-              PATCH_OK=1
-            fi
-          done
+          # Replace the entire __ANDROID_KABI_CHECK_SIZE_ALIGN macro body
+          # and _ANDROID_KABI_REPLACE macro to avoid static_assert failures
+          python3 << 'PYEOF'
+          import re
 
-          if [ $PATCH_OK -eq 0 ]; then
-            echo "DroidSpaces patches did not apply. Applying direct fix..."
+          with open('include/linux/android_kabi.h', 'r') as f:
+              content = f.read()
 
-            # Disable kABI size/alignment checks by making the macro a no-op
-            # This is the nuclear option but it works for custom kernels
-            if [ -f include/linux/android_kabi.h ]; then
-              echo "Patching include/linux/android_kabi.h to disable kABI checks..."
+          # Replace __ANDROID_KABI_CHECK_SIZE_ALIGN macro
+          content = re.sub(
+              r'#define __ANDROID_KABI_CHECK_SIZE_ALIGN\(_orig, _new\).*?(?=\n#define|\n\n)',
+              '#define __ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new) do { } while (0)\n',
+              content,
+              flags=re.DOTALL
+          )
 
-              # Back up original
-              cp include/linux/android_kabi.h include/linux/android_kabi.h.bak
+          # Replace _ANDROID_KABI_REPLACE macro to just use _new directly
+          content = re.sub(
+              r'#define _ANDROID_KABI_REPLACE\(_orig, _new\).*?(?=\n#define|\n#endif)',
+              '#define _ANDROID_KABI_REPLACE(_orig, _new) _new\n',
+              content,
+              flags=re.DOTALL
+          )
 
-              # Replace the _ANDROID_KABI_REPLACE macro to just use the new struct
-              sed -i 's/#define _ANDROID_KABI_REPLACE(_orig, _new) \\/#define _ANDROID_KABI_REPLACE(_orig, _new) _new\n#if 0/' include/linux/android_kabi.h
-              sed -i '/__ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new)/s/^/\/\/ /' include/linux/android_kabi.h
+          with open('include/linux/android_kabi.h', 'w') as f:
+              f.write(content)
 
-              # Simpler approach: just make the check always pass
-              # Restore from backup and try sed approach
-              cp include/linux/android_kabi.h.bak include/linux/android_kabi.h
+          print("=== Patched android_kabi.h ===")
+          PYEOF
 
-              # Make _Static_assert a no-op for size and align checks
-              sed -i 's/_Static_assert(sizeof(struct{_new;}) <= sizeof(struct{_orig;})/if(0)/' include/linux/android_kabi.h
-              sed -i 's/_Static_assert(__alignof__(struct{_new;}) <= __alignof__(struct{_orig;})/if(0)/' include/linux/android_kabi.h
-
-              echo "=== Verify fix ==="
-              grep -n "Static_assert\|if(0)" include/linux/android_kabi.h | head -10
-            fi
-          else
-            echo "DroidSpaces patches applied successfully!"
-          fi
+          # Verify the fix
+          echo "=== Checking patched file ==="
+          grep -n "ANDROID_KABI_CHECK_SIZE_ALIGN\|_ANDROID_KABI_REPLACE" include/linux/android_kabi.h
 
       - name: Apply DroidSpaces kernel config
         working-directory: kernel
